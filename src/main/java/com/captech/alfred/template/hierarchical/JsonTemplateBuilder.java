@@ -55,7 +55,6 @@ public class JsonTemplateBuilder implements SourceTemplateBuilder {
         try {
             JSONObject jsonObject = new JSONObject(json);
 
-            @SuppressWarnings("unchecked")
             Iterator<String> keys = jsonObject.keys();
             keys = new OrderedIterator(keys);
 
@@ -102,7 +101,6 @@ public class JsonTemplateBuilder implements SourceTemplateBuilder {
     }
 
     private ArrayList<Field> toHiveSchema(JSONObject o, Field field, Integer posn) throws JSONException {
-        @SuppressWarnings("unchecked")
         Iterator<String> keys = o.keys();
         keys = new OrderedIterator(keys);
         ArrayList<Field> fields = new ArrayList<>();
