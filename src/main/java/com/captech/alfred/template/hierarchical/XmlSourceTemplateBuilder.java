@@ -22,7 +22,7 @@ import com.captech.alfred.exceptions.RequiredInfoMissing;
 import com.captech.alfred.template.Field;
 import com.captech.alfred.template.Template;
 import com.captech.alfred.template.XMLFile;
-import org.apache.commons.lang.StringUtils;
+import org.apache.commons.lang3.StringUtils;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -290,9 +290,9 @@ public class XmlSourceTemplateBuilder implements SourceTemplateBuilder {
         InputStream inputStream = new ByteArrayInputStream(rawXml.getBytes());
         DocumentBuilderFactory factory = DocumentBuilderFactory.newInstance();
         factory.setNamespaceAware(true);
-        factory.setFeature("http://apache.org/xml/features/disallow-doctype-decl", true);
 
         try {
+            factory.setFeature("http://apache.org/xml/features/disallow-doctype-decl", true);
             factory.setFeature("http://apache.org/xml/features/nonvalidating/load-dtd-grammar", false);
             factory.setFeature("http://apache.org/xml/features/nonvalidating/load-external-dtd", false);
             DocumentBuilder builder = factory.newDocumentBuilder();

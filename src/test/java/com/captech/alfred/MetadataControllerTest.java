@@ -21,21 +21,17 @@ import com.captech.alfred.exceptions.KeyExistsException;
 import com.captech.alfred.template.RegisteredKeys;
 import com.captech.alfred.template.Template;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import org.junit.Before;
-import org.junit.Test;
-import org.junit.runner.RunWith;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
 import org.mockito.Mockito;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMockMvc;
 import org.springframework.boot.test.context.SpringBootTest;
-import org.springframework.boot.test.context.TestConfiguration;
-import org.springframework.context.annotation.Bean;
-import org.springframework.context.annotation.Primary;
 import org.springframework.http.MediaType;
 import org.springframework.security.test.context.support.WithMockUser;
 import org.springframework.security.web.FilterChainProxy;
 import org.springframework.test.context.ActiveProfiles;
-import org.springframework.test.context.junit4.SpringRunner;
+import org.springframework.test.context.bean.override.mockito.MockitoBean;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.setup.MockMvcBuilders;
 import org.springframework.web.context.WebApplicationContext;
@@ -45,14 +41,14 @@ import java.io.FileReader;
 import java.io.IOException;
 import java.util.Arrays;
 
-import static org.mockito.Matchers.any;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.nullable;
 import static org.mockito.Mockito.when;
 import static org.springframework.security.test.web.servlet.setup.SecurityMockMvcConfigurers.springSecurity;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.*;
 import static org.springframework.test.web.servlet.result.MockMvcResultHandlers.print;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.*;
 
-@RunWith(SpringRunner.class)
 @SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT)
 @AutoConfigureMockMvc
 @ActiveProfiles("local")
@@ -64,9 +60,7 @@ public class MetadataControllerTest {
     @Autowired
     protected WebApplicationContext wac;
 
-    //@MockBean(classes=TextFileDatastoreService.class)
-    //@Qualifier("getConnector")
-    @Autowired
+    @MockitoBean
     DataStoreService dataConnection;
 
     private MockMvc mockMvc;
@@ -80,7 +74,7 @@ public class MetadataControllerTest {
     private String key = "householdElectricPowerConsumption";
     private Template md = new Template();
 
-    @Before
+    @BeforeEach
     public void setup() {
         Mockito.reset(dataConnection);
         mockMvc = MockMvcBuilders.webAppContextSetup(wac).apply(springSecurity(springSecurityFilterChain)).build();
@@ -124,7 +118,7 @@ public class MetadataControllerTest {
     @Test
     public void findMetadataPass() throws Exception {
 
-        when(dataConnection.findMetaDataByFileName(any(String.class), any(String.class))).thenReturn(key);
+        when(dataConnection.findMetaDataByFileName(any(String.class), nullable(String.class))).thenReturn(key);
         when(dataConnection.getCurrentMetadata(any(String.class))).thenReturn(md);
 
         this.mockMvc.perform(get("/fileMetadata").param("name", "editorSample.csv")).andDo(print())
@@ -185,17 +179,6 @@ public class MetadataControllerTest {
         when(dataConnection.getCurrentMetadata(any(String.class))).thenReturn(md);
         this.mockMvc.perform(put(testFilePath).contentType(MediaType.APPLICATION_JSON).content(input)).andDo(print())
                 .andExpect(status().isInternalServerError());
-    }
-
-    @TestConfiguration
-    public static class MetadataControllerTestConfiguration {
-
-        // manually insert mocked primary service
-        @Bean("getConnector")
-        @Primary
-        public static DataStoreService someService() {
-            return Mockito.mock(DataStoreService.class);
-        }
     }
 
     @Test

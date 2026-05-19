@@ -89,7 +89,7 @@ public class BasicAuthController {
     @PutMapping("user/password")
     public User updatePassword(@RequestBody Password password, Authentication auth) {
         User user = getSpecificUserAuth(auth.getName());
-        if (password == null || StringUtils.isEmpty(password.getNewPassword())) {
+        if (password == null || !StringUtils.hasLength(password.getNewPassword())) {
             password = new Password();
             password.setNewPassword("");
         }
@@ -104,7 +104,7 @@ public class BasicAuthController {
     @PreAuthorize("hasAnyRole('ADMIN', 'AUTH')or hasAnyAuthority('PERM_PASSWORD')")
     public User updatePassword(@RequestBody Password password, @PathVariable String username, Authentication auth) {
         User user = getSpecificUserAuth(username);
-        if (password == null || StringUtils.isEmpty(password.getNewPassword())) {
+        if (password == null || !StringUtils.hasLength(password.getNewPassword())) {
             password = new Password();
             password.setNewPassword("");
         }

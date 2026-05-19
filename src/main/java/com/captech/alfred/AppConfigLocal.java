@@ -18,16 +18,19 @@ package com.captech.alfred;
 
 import com.captech.alfred.dataConnections.DataStoreService;
 import com.captech.alfred.dataConnections.DataUserStoreService;
+import com.captech.alfred.dataConnections.UsersProperties;
 import com.captech.alfred.dataConnections.textFiles.TextFileDatastoreService;
+import com.captech.alfred.dataConnections.textFiles.TextFileProperties;
 import com.captech.alfred.dataConnections.textFiles.TextUsers;
 import com.captech.alfred.template.TabularFile;
 import com.captech.alfred.template.TechnicalFile;
+import org.springframework.boot.context.properties.EnableConfigurationProperties;
 import org.springframework.context.annotation.*;
-import org.springframework.data.hadoop.store.output.TextFileWriter;
 
 @Configuration
 @ComponentScan(value = { "com.captech.alfred" })
 @Profile("local")
+@EnableConfigurationProperties({TextFileProperties.class, UsersProperties.class})
 public class AppConfigLocal {
 
     @Bean@Primary
@@ -44,11 +47,6 @@ public class AppConfigLocal {
     @Primary
     TechnicalFile getFileType() {
         return new TabularFile();
-    }
-
-    @Bean
-    TextFileWriter sampleWriter() {
-        return null;
     }
 
 }

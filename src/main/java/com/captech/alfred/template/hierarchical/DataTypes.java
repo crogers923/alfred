@@ -16,7 +16,10 @@
 
 package com.captech.alfred.template.hierarchical;
 
-import org.apache.commons.codec.binary.StringUtils;
+import org.apache.commons.lang3.StringUtils;
+
+import java.math.BigDecimal;
+import java.math.BigInteger;
 
 public class DataTypes {
 
@@ -67,9 +70,9 @@ public class DataTypes {
             if (value.split("-").length > 2 || value.contains("T") || value.split(":").length < 3) {
                 return false;
             }
-            javax.xml.bind.DatatypeConverter.parseTime(value);
+            java.time.OffsetTime.parse(value);
             return true;
-        } catch (IllegalArgumentException e) {
+        } catch (java.time.format.DateTimeParseException e) {
             return false;
         }
     }
@@ -79,9 +82,12 @@ public class DataTypes {
             if (value.split("-").length < 3 || value.contains("T")) {
                 return false;
             }
-            javax.xml.bind.DatatypeConverter.parseDate(value);
+            if (value.matches("\\d{4}-\\d{2}-\\d{2}([+-]\\d{2}:\\d{2}|Z)?")) {
+                return true;
+            }
+            java.time.LocalDate.parse(value);
             return true;
-        } catch (IllegalArgumentException e) {
+        } catch (java.time.format.DateTimeParseException e) {
             return false;
         }
     }
@@ -91,18 +97,18 @@ public class DataTypes {
             if (!value.contains("T") || value.split(":").length < 3 || value.split("-").length < 3) {
                 return false;
             }
-            javax.xml.bind.DatatypeConverter.parseDateTime(value);
+            java.time.OffsetDateTime.parse(value);
             return true;
-        } catch (IllegalArgumentException e) {
+        } catch (java.time.format.DateTimeParseException e) {
             return false;
         }
     }
 
     private static boolean isInteger(String value) {
         try {
-            javax.xml.bind.DatatypeConverter.parseInteger(value);
+            new BigInteger(value);
             return true;
-        } catch (IllegalArgumentException e) {
+        } catch (NumberFormatException e) {
             return false;
         }
     }
@@ -112,29 +118,24 @@ public class DataTypes {
             if (value.contains("e") || value.contains("E")) {
                 return false;
             }
-            javax.xml.bind.DatatypeConverter.parseDecimal(value);
+            new BigDecimal(value);
             return true;
-        } catch (IllegalArgumentException e) {
+        } catch (NumberFormatException e) {
             return false;
         }
     }
 
     private static boolean isFloat(String value) {
         try {
-            javax.xml.bind.DatatypeConverter.parseFloat(value);
+            Float.parseFloat(value);
             return true;
-        } catch (IllegalArgumentException e) {
+        } catch (NumberFormatException e) {
             return false;
         }
     }
 
     private static boolean isString(String value) {
-        try {
-            javax.xml.bind.DatatypeConverter.parseString(value);
-            return true;
-        } catch (IllegalArgumentException e) {
-            return false;
-        }
+        return value != null;
     }
 
     public static int getRankOrder(String dataType) {

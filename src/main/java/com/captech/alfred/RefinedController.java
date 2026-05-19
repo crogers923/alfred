@@ -21,6 +21,7 @@ import com.captech.alfred.exceptions.AppInternalError;
 import com.captech.alfred.template.Template;
 import com.captech.alfred.template.refined.Refined;
 import com.captech.alfred.template.validator.RefinedTemplateValidator;
+import jakarta.validation.Valid;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -32,7 +33,6 @@ import org.springframework.validation.ObjectError;
 import org.springframework.web.bind.WebDataBinder;
 import org.springframework.web.bind.annotation.*;
 
-import javax.validation.Valid;
 import java.text.SimpleDateFormat;
 import java.util.Date;
 import java.util.UUID;
@@ -61,7 +61,7 @@ public class RefinedController {
         this.dataConnection = dataConnection;
     }
 
-    @PostMapping(consumes = "application/json")
+    @PostMapping(value = {"", "/"}, consumes = "application/json")
     @PreAuthorize("hasRole('ADMIN') or hasAnyAuthority('PERM_ADD')")
     public ResponseEntity<?> registerNewRefined(@RequestBody @Valid Refined refined, Errors errors) {
         refined.getRefinedDataset().getFile().setGuid(UUID.randomUUID());

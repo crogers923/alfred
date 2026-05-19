@@ -28,15 +28,17 @@ import com.captech.alfred.dataConnections.hadoop.HadoopUsers;
 import com.captech.alfred.dataConnections.textFiles.TextFileDatastoreService;
 import com.captech.alfred.dataConnections.textFiles.TextFileProperties;
 import com.captech.alfred.dataConnections.textFiles.TextUsers;
+import org.apache.hadoop.fs.FileSystem;
+import org.apache.hadoop.fs.Path;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.CommandLineRunner;
 import org.springframework.boot.autoconfigure.EnableAutoConfiguration;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
-import org.springframework.data.hadoop.fs.FsShell;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Component;
 
+import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Paths;
 import java.util.ArrayList;
@@ -45,14 +47,14 @@ import java.util.Date;
 
 @Component
 @EnableAutoConfiguration
-@EnableConfigurationProperties(HadoopProperties.class)
+@EnableConfigurationProperties({HadoopProperties.class, TextFileProperties.class, UsersProperties.class})
 public class Startup implements CommandLineRunner {
 
     @Autowired
     JdbcTemplate hive;
 
-    @Autowired
-    private FsShell shell;
+    @Autowired(required = false)
+    private FileSystem fileSystem;
 
     @Autowired
     HadoopProperties properties;
@@ -143,36 +145,16 @@ public class Startup implements CommandLineRunner {
                 + "stored as textfile " + "LOCATION '" + properties.getFullVersionedRefined() + "'";
 
         if (dataConnection instanceof HadoopDatastoreService) {
-            if (!shell.test(true, false, true, properties.getFullCurrentMetadataPath())) {
-                shell.mkdir(properties.getFullCurrentMetadataPath());
-            }
-            if (!shell.test(true, false, true, properties.getFullVersionedMetadataPath())) {
-                shell.mkdir(properties.getFullVersionedMetadataPath());
-            }
-            if (!shell.test(true, false, true, properties.getFullInstancePath())) {
-                shell.mkdir(properties.getFullInstancePath());
-            }
-            if (!shell.test(true, false, true, properties.getFullDraftLocation())) {
-                shell.mkdir(properties.getFullDraftLocation());
-            }
-            if (!shell.test(true, false, true, properties.getFullDraftRefined())) {
-                shell.mkdir(properties.getFullDraftRefined());
-            }
-            if (!shell.test(true, false, true, properties.getFullVersionedRefined())) {
-                shell.mkdir(properties.getFullVersionedRefined());
-            }
-            if (!shell.test(true, false, true, properties.getFullCurrentRefined())) {
-                shell.mkdir(properties.getFullCurrentRefined());
-            }
-            if (!shell.test(true, false, true, properties.getFullCurrentSandbox())) {
-                shell.mkdir(properties.getFullCurrentSandbox());
-            }
-            if (!shell.test(true, false, true, properties.getFullVersionedSandbox())) {
-                shell.mkdir(properties.getFullVersionedSandbox());
-            }
-            if(!shell.test(true, false, true, properties.getFullSampleDir())){
-                shell.mkdir(properties.getFullSampleDir());
-            }
+            mkdirIfMissing(properties.getFullCurrentMetadataPath());
+            mkdirIfMissing(properties.getFullVersionedMetadataPath());
+            mkdirIfMissing(properties.getFullInstancePath());
+            mkdirIfMissing(properties.getFullDraftLocation());
+            mkdirIfMissing(properties.getFullDraftRefined());
+            mkdirIfMissing(properties.getFullVersionedRefined());
+            mkdirIfMissing(properties.getFullCurrentRefined());
+            mkdirIfMissing(properties.getFullCurrentSandbox());
+            mkdirIfMissing(properties.getFullVersionedSandbox());
+            mkdirIfMissing(properties.getFullSampleDir());
             hive.execute(createDB);
             hive.execute(currentDdl);
             hive.execute(versionDdl);
@@ -181,8 +163,8 @@ public class Startup implements CommandLineRunner {
             hive.execute(versionRefinedDdl);
         }
         if (dataUserConn instanceof HadoopUsers) {
-            if (!shell.test(true, false, true, authProperties.getfullAuthPath())) {
-                shell.mkdir(authProperties.getfullAuthPath());
+            if (!exists(authProperties.getfullAuthPath())) {
+                mkdirIfMissing(authProperties.getfullAuthPath());
                 if (dataUserConn.listUsers().isEmpty()) {
                     User user = new User();
                     user.addRole(new Role("AUTH"));
@@ -193,12 +175,18 @@ public class Startup implements CommandLineRunner {
                     dataUserConn.writeNewUser(user);
                 }
             }
-            if (!shell.test(true, false, true, authProperties.getfullOldAuthPath())) {
-                shell.mkdir(authProperties.getfullOldAuthPath());
-            }
-            if (!shell.test(true, false, true, authProperties.getFullAuthoritiesPath())) {
-                shell.mkdir(authProperties.getFullAuthoritiesPath());
-            }
+            mkdirIfMissing(authProperties.getfullOldAuthPath());
+            mkdirIfMissing(authProperties.getFullAuthoritiesPath());
+        }
+    }
+
+    private boolean exists(String path) throws IOException {
+        return fileSystem != null && fileSystem.exists(new Path(path));
+    }
+
+    private void mkdirIfMissing(String path) throws IOException {
+        if (fileSystem != null && !fileSystem.exists(new Path(path))) {
+            fileSystem.mkdirs(new Path(path));
         }
     }
 }

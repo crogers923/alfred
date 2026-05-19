@@ -21,12 +21,11 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.core.annotation.Order;
-import org.springframework.security.config.annotation.authentication.builders.AuthenticationManagerBuilder;
-import org.springframework.security.config.annotation.authentication.configurers.GlobalAuthenticationConfigurerAdapter;
-import org.springframework.security.config.annotation.method.configuration.EnableGlobalMethodSecurity;
+import org.springframework.http.HttpMethod;
+import org.springframework.security.config.annotation.method.configuration.EnableMethodSecurity;
 import org.springframework.security.config.annotation.web.builders.HttpSecurity;
 import org.springframework.security.config.annotation.web.configuration.EnableWebSecurity;
-import org.springframework.security.config.annotation.web.configuration.WebSecurityConfigurerAdapter;
+import org.springframework.security.config.annotation.web.configurers.AbstractHttpConfigurer;
 import org.springframework.security.config.http.SessionCreationPolicy;
 import org.springframework.security.core.authority.AuthorityUtils;
 import org.springframework.security.core.userdetails.UserDetails;
@@ -34,23 +33,19 @@ import org.springframework.security.core.userdetails.UserDetailsService;
 import org.springframework.security.core.userdetails.UsernameNotFoundException;
 import org.springframework.security.crypto.bcrypt.BCryptPasswordEncoder;
 import org.springframework.security.crypto.password.PasswordEncoder;
+import org.springframework.security.web.SecurityFilterChain;
 import org.springframework.security.web.authentication.switchuser.SwitchUserFilter;
-import org.springframework.security.web.util.matcher.AntPathRequestMatcher;
+import org.springframework.security.web.servlet.util.matcher.PathPatternRequestMatcher;
 
 import java.util.Date;
 import java.util.HashSet;
 import java.util.Set;
 
 @Configuration
-class SecurityConfiguration extends GlobalAuthenticationConfigurerAdapter {
+class SecurityConfiguration {
 
     @Autowired
     DataUserStoreService userStore;
-
-    @Override
-    public void init(AuthenticationManagerBuilder auth) throws Exception {
-        auth.userDetailsService(userDetailsService()).passwordEncoder(encoder());
-    }
 
     @Bean
     public PasswordEncoder encoder() {
@@ -95,45 +90,52 @@ class SecurityConfiguration extends GlobalAuthenticationConfigurerAdapter {
 }
 
 @EnableWebSecurity
-@EnableGlobalMethodSecurity(prePostEnabled = true)
+@EnableMethodSecurity(prePostEnabled = true)
 @Configuration
-class WebSecurityConfig extends WebSecurityConfigurerAdapter {
+class WebSecurityConfig {
 
-    @Override
-
-    protected void configure(HttpSecurity http) throws Exception {
-        http.addFilterAfter(new ChangePasswordFilter(),
-                SwitchUserFilter.class)
-                .authorizeRequests().antMatchers("/", "/js/**", "/css/**", "/webjars/**").permitAll()
-                .anyRequest().fullyAuthenticated().and().httpBasic().realmName("Alfred").and()
-                .csrf().disable().logout().logoutSuccessUrl("/").and().sessionManagement()
-                .sessionCreationPolicy(SessionCreationPolicy.STATELESS);
+    @Bean
+    @Order(3)
+    SecurityFilterChain applicationSecurityFilterChain(HttpSecurity http) throws Exception {
+        http.addFilterAfter(new ChangePasswordFilter(), SwitchUserFilter.class)
+                .authorizeHttpRequests(authorize -> authorize
+                        .requestMatchers("/", "/js/**", "/css/**", "/webjars/**").permitAll()
+                        .anyRequest().fullyAuthenticated())
+                .httpBasic(httpBasic -> httpBasic.realmName("Alfred"))
+                .csrf(AbstractHttpConfigurer::disable)
+                .logout(logout -> logout.logoutSuccessUrl("/"))
+                .sessionManagement(session -> session.sessionCreationPolicy(SessionCreationPolicy.STATELESS));
+        return http.build();
     }
 }
 
 @Configuration
-@Order(1)
-class WebSecurityConfig1 extends WebSecurityConfigurerAdapter {
-    @Override
-    protected void configure(HttpSecurity http) throws Exception {
-        http.antMatcher("/authentication/user/password").authorizeRequests()
-                .antMatchers("/authentication/user/password").fullyAuthenticated().and()
-                .httpBasic().realmName("Alfred").and().csrf().disable().sessionManagement()
-                .sessionCreationPolicy(SessionCreationPolicy.STATELESS);
-
+class PasswordSecurityConfig {
+    @Bean
+    @Order(1)
+    SecurityFilterChain passwordSecurityFilterChain(HttpSecurity http) throws Exception {
+        http.securityMatcher("/authentication/user/password")
+                .authorizeHttpRequests(authorize -> authorize
+                        .requestMatchers("/authentication/user/password").fullyAuthenticated())
+                .httpBasic(httpBasic -> httpBasic.realmName("Alfred"))
+                .csrf(AbstractHttpConfigurer::disable)
+                .sessionManagement(session -> session.sessionCreationPolicy(SessionCreationPolicy.STATELESS));
+        return http.build();
     }
 }
 
 @Configuration
-@Order(2)
-class WebSecurityConfig2 extends WebSecurityConfigurerAdapter {
-    @Override
-    protected void configure(HttpSecurity http) throws Exception {
-        http.requestMatcher(new
-                AntPathRequestMatcher("/authentication/user", "GET")).authorizeRequests()
-                .antMatchers("/authentication/user").fullyAuthenticated().and()
-                .httpBasic().realmName("Alfred").and().csrf().disable().sessionManagement()
-                .sessionCreationPolicy(SessionCreationPolicy.STATELESS);
-
+class CurrentUserSecurityConfig {
+    @Bean
+    @Order(2)
+    SecurityFilterChain currentUserSecurityFilterChain(HttpSecurity http) throws Exception {
+        http.securityMatcher(PathPatternRequestMatcher.withDefaults()
+                        .matcher(HttpMethod.GET, "/authentication/user"))
+                .authorizeHttpRequests(authorize -> authorize
+                        .anyRequest().fullyAuthenticated())
+                .httpBasic(httpBasic -> httpBasic.realmName("Alfred"))
+                .csrf(AbstractHttpConfigurer::disable)
+                .sessionManagement(session -> session.sessionCreationPolicy(SessionCreationPolicy.STATELESS));
+        return http.build();
     }
 }

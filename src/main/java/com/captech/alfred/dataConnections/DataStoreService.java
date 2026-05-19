@@ -101,7 +101,7 @@ public abstract class DataStoreService {
             // Get the file and save it somewhere
             byte[] bytes = file.getBytes();
             String prepend = "sbx_";
-            if (!StringUtils.isEmpty(key)) {
+            if (StringUtils.hasLength(key)) {
                 prepend = prepend + key + "_";
             }
             String filename = prepend + file.getOriginalFilename();

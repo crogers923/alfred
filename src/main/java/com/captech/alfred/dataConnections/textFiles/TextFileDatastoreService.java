@@ -29,7 +29,7 @@ import com.captech.alfred.template.refined.Refined;
 import com.fasterxml.jackson.core.JsonParseException;
 import com.fasterxml.jackson.databind.DeserializationFeature;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import org.apache.commons.lang.StringUtils;
+import org.apache.commons.lang3.StringUtils;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -47,24 +47,24 @@ import java.util.UUID;
 
 @Service
 @EnableConfigurationProperties(TextFileProperties.class)
-
-private void validateGuid(String guid) {
-    if (guid.contains("..") || guid.contains("/") || guid.contains("\\")) {
-        throw new IllegalArgumentException("Invalid guid");
-    }
-}
-
-private void validateKey(String key) {
-        if (key.contains("..")) {
-            throw new IllegalArgumentException("Invalid key");
-        }
-    }
 public class TextFileDatastoreService extends DataStoreService {
 
     private static final Logger logger = LoggerFactory.getLogger(TextFileDatastoreService.class);
 
     @Autowired
     TextFileProperties textFileProperties;
+
+    private void validateGuid(String guid) {
+        if (guid != null && (guid.contains("..") || guid.contains("/") || guid.contains("\\"))) {
+            throw new IllegalArgumentException("Invalid guid");
+        }
+    }
+
+    private void validateKey(String key) {
+        if (key != null && (key.contains("..") || key.contains("/") || key.contains("\\"))) {
+            throw new IllegalArgumentException("Invalid key");
+        }
+    }
 
     @Override
     public Template getCurrentMetadata(String key) {

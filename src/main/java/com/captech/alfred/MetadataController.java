@@ -28,15 +28,14 @@ import com.captech.alfred.template.hierarchical.SourceTemplateBuilder;
 import com.captech.alfred.template.hierarchical.XmlHelperUtils;
 import com.captech.alfred.template.refined.Refined;
 import com.captech.alfred.template.validator.TemplateValidator;
-import org.apache.commons.lang.StringUtils;
+import jakarta.validation.Valid;
+import org.apache.commons.lang3.StringUtils;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.boot.autoconfigure.EnableAutoConfiguration;
 import org.springframework.core.env.Environment;
-import org.springframework.data.hadoop.store.output.TextFileWriter;
-import org.springframework.data.hadoop.store.strategy.naming.StaticFileNamingStrategy;
 import org.springframework.http.ResponseEntity;
 import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.security.core.Authentication;
@@ -47,7 +46,6 @@ import org.springframework.web.bind.WebDataBinder;
 import org.springframework.web.bind.annotation.*;
 import org.springframework.web.multipart.MultipartFile;
 
-import javax.validation.Valid;
 import java.io.IOException;
 import java.text.SimpleDateFormat;
 import java.util.ArrayList;
@@ -84,8 +82,6 @@ public class MetadataController {
     private TemplateValidator templateValidator;
     @Autowired
     private Environment env;
-    @Autowired
-    private TextFileWriter sampleWriter;
 
     public MetadataController(DataStoreService dataConnection) {
         //logger.debug("initialized MetadataController with dataConnection class "
@@ -187,7 +183,7 @@ public class MetadataController {
         return filedata;
     }
 
-    @PostMapping(consumes = "application/json")
+    @PostMapping(value = {"", "/"}, consumes = "application/json")
     @PreAuthorize("hasAnyRole('ADMIN', 'SANDBOX') or hasAnyAuthority('PERM_ADD')")
     public ResponseEntity<?> registerNewMetadata(@RequestBody @Valid Template metadata, Errors errors,
                                                  Authentication auth) {
@@ -426,12 +422,12 @@ public class MetadataController {
                 throw new AppInternalError("Template already has fields. Cannot extrapolate");
             }
             String sampleData = new String(file.getBytes());
-            if (dataConnection instanceof HadoopDatastoreService && sampleWriter != null) {
+            if (dataConnection instanceof HadoopDatastoreService) {
                 // write the sample file to hadoop
                 try {
                     String formattedDate = new SimpleDateFormat(Constants.HADOOP_VERS_FORMAT).format(new Date());
-                    sampleWriter.setFileNamingStrategy(new StaticFileNamingStrategy(file.getOriginalFilename() + "_" + formattedDate));
-                    sampleWriter.write(sampleData);
+                    ((HadoopDatastoreService) dataConnection)
+                            .writeSample(file.getOriginalFilename() + "_" + formattedDate, sampleData);
                 } catch (Exception e) {
                     //dont fail over this
                     logger.warn("could not save sample data to hadoop");

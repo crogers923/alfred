@@ -22,62 +22,54 @@ import com.captech.alfred.authentication.User;
 import com.captech.alfred.dataConnections.DataUserStoreService;
 import com.captech.alfred.dataConnections.UsersProperties;
 import com.captech.alfred.exceptions.AppInternalError;
+import com.captech.alfred.exceptions.KeyExistsException;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import org.apache.commons.lang.StringUtils;
+import org.apache.commons.lang3.StringUtils;
+import org.apache.hadoop.fs.FSDataInputStream;
+import org.apache.hadoop.fs.FSDataOutputStream;
 import org.apache.hadoop.fs.FileStatus;
+import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.Path;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.autoconfigure.EnableAutoConfiguration;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
-import org.springframework.context.annotation.Bean;
-import org.springframework.context.annotation.Configuration;
-import org.springframework.data.hadoop.fs.FsShell;
-import org.springframework.data.hadoop.store.output.TextFileWriter;
-import org.springframework.data.hadoop.store.strategy.naming.StaticFileNamingStrategy;
+import org.springframework.context.annotation.Profile;
 import org.springframework.stereotype.Service;
 
 import java.io.IOException;
-import java.nio.file.Paths;
+import java.nio.charset.StandardCharsets;
 import java.text.SimpleDateFormat;
-import java.util.*;
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.Date;
+import java.util.HashSet;
+import java.util.List;
+import java.util.Set;
 
 @Service
+@Profile("!local")
 @EnableAutoConfiguration
 @EnableConfigurationProperties(UsersProperties.class)
 public class HadoopUsers extends DataUserStoreService {
 
     private static final Logger logger = LoggerFactory.getLogger(HadoopUsers.class);
+    private final ObjectMapper mapper = new ObjectMapper();
+
     @Autowired
     UsersProperties properties;
+
     @Autowired
-    TextFileWriter authWriter;
-    @Autowired
-    TextFileWriter removedAuthWriter;
-    @Autowired
-    TextFileWriter authoritiesWriter;
-    @Autowired
-    private FsShell shell;
+    private FileSystem fileSystem;
 
     @Override
     public User findByUsername(String username) {
-        for (FileStatus s : shell.ls(Paths.get(properties.getAuthPath()).toString())) {
-            if (s.isFile()) {
-                String filename = s.getPath().getName();
+        for (FileStatus status : list(properties.getAuthPath())) {
+            if (status.isFile()) {
+                String filename = status.getPath().getName();
                 if (filename.startsWith(username)) {
-                    Collection<String> fileCollection = shell.text(Paths.get(properties.getAuthPath(), filename).toString());
-                    if (!fileCollection.isEmpty()) {
-
-                        ObjectMapper mapper = new ObjectMapper();
-                        try {
-                            return mapper.readValue(fileCollection.iterator().next(), User.class);
-                        } catch (IOException e) {
-                            logger.error("Unable to read data - " + e.getMessage());
-                            logger.error(e.toString());
-                            throw new AppInternalError("Unable to read data - " + e.getMessage());
-                        }
-                    }
+                    return readJson(status.getPath(), User.class);
                 }
             }
         }
@@ -85,12 +77,9 @@ public class HadoopUsers extends DataUserStoreService {
     }
 
     public boolean verifyExistingUser(String username) {
-        for (FileStatus s : shell.ls(Paths.get(properties.getAuthPath()).toString())) {
-            if (s.isFile()) {
-                String filename = s.getPath().getName();
-                if (filename.startsWith(username)) {
-                    return true;
-                }
+        for (FileStatus status : list(properties.getAuthPath())) {
+            if (status.isFile() && status.getPath().getName().startsWith(username)) {
+                return true;
             }
         }
         return false;
@@ -102,48 +91,26 @@ public class HadoopUsers extends DataUserStoreService {
         if (!verifyExistingUser(username)) {
             return null;
         }
-        for (FileStatus s : shell.ls(Paths.get(properties.getAuthPath()).toString())) {
-            if (s.isFile()) {
-                String filename = s.getPath().getName();
+        for (FileStatus status : list(properties.getAuthPath())) {
+            if (status.isFile()) {
+                String filename = status.getPath().getName();
                 if (filename.startsWith(username)) {
-                    shell.mv(Paths.get(properties.getAuthPath(), filename).toString(),
-                            Paths.get(properties.getOldAuthPath(), filename + "_"
-                                    + new SimpleDateFormat(Constants.HADOOP_VERS_FORMAT).format(new Date())).toString());
+                    Path destination = new Path(properties.getOldAuthPath(), filename + "_"
+                            + new SimpleDateFormat(Constants.HADOOP_VERS_FORMAT).format(new Date()));
+                    rename(status.getPath(), destination);
                     if (!movedFiles.isEmpty()) {
                         movedFiles = movedFiles + ",";
-                    } else {
-                        movedFiles = movedFiles + filename;
                     }
+                    movedFiles = movedFiles + filename;
                 }
             }
         }
         return movedFiles;
-
     }
 
     @Override
     public void writeNewUser(User user) {
-
-
-        authWriter.setFileNamingStrategy(new StaticFileNamingStrategy(generateFilename(user)));
-        ObjectMapper mapper = new ObjectMapper();
-        try {
-            String dataAsString = mapper.writeValueAsString(user);
-            authWriter.write(dataAsString);
-        } catch (IOException e) {
-            logger.error("unable to write data to Hadoop: " + e.getMessage());
-            logger.error(e.toString());
-            throw new AppInternalError("unable to write data to Hadoop: " + e.getMessage());
-        } finally {
-            try {
-                authWriter.flush();
-                authWriter.close();
-            } catch (IOException e) {
-                logger.error("unable to write data to Hadoop: " + e.getMessage());
-                logger.error(e.toString());
-            }
-        }
-
+        writeJson(properties.getAuthPath(), generateFilename(user), user, false, false);
     }
 
     @Override
@@ -152,25 +119,14 @@ public class HadoopUsers extends DataUserStoreService {
             deleteUser(user.getUsername());
         }
         writeNewUser(user);
-
     }
 
     @Override
     public List<Role> getRoles() {
         List<Role> roles = new ArrayList<>();
-        for (FileStatus s : shell.ls(Paths.get(properties.getAuthoritiesPath()).toString())) {
-            if (s.isFile() && !s.getPath().getName().startsWith("ALL_PERMS")) {
-                Collection<String> fileCollection = shell.text(Paths.get(properties.getAuthPath(), s.getPath().getName()).toString());
-                if (!fileCollection.isEmpty()) {
-                    ObjectMapper mapper = new ObjectMapper();
-                    try {
-                        roles.add(mapper.readValue(fileCollection.iterator().next(), Role.class));
-                    } catch (IOException e) {
-                        logger.error("Unable to read data - " + e.getMessage());
-                        logger.error(e.toString());
-                        throw new AppInternalError("Unable to read data - " + e.getMessage());
-                    }
-                }
+        for (FileStatus status : list(properties.getAuthoritiesPath())) {
+            if (status.isFile() && !status.getPath().getName().startsWith("ALL_PERMS")) {
+                roles.add(readJson(status.getPath(), Role.class));
             }
         }
         return roles;
@@ -179,92 +135,37 @@ public class HadoopUsers extends DataUserStoreService {
     @Override
     public List<String> getPermissions() {
         List<String> permissions = new ArrayList<>();
-        // permissions are stored as a comma delimited file called ALL_PERMS
-        for (FileStatus s : shell.ls(Paths.get(properties.getAuthoritiesPath(), "ALL_PERMS").toString())) {
-            if (s.isFile()) {
-                Collection<String> fileCollection = shell.text(Paths.get(properties.getAuthoritiesPath(), s.getPath().getName()).toString());
-                if (!fileCollection.isEmpty()) {
-                    String text = fileCollection.iterator().next();
-                    if (!StringUtils.isEmpty(text)) {
-                        text = text.replaceAll("\n", "");
-                        String[] values = text.split(",");
-                        if (values.length > 0) {
-                            permissions.addAll(Arrays.asList(values));
-                        }
-                    }
-                }
-            }
+        Path permissionsPath = new Path(properties.getAuthoritiesPath(), "ALL_PERMS");
+        if (!exists(permissionsPath)) {
+            return permissions;
         }
-
+        String text = readText(permissionsPath).replaceAll("\n", "");
+        if (StringUtils.isNotEmpty(text)) {
+            permissions.addAll(Arrays.asList(text.split(",")));
+        }
         return permissions;
     }
 
     @Override
     public void addPermission(String permission) {
-        authoritiesWriter.setFileNamingStrategy(new StaticFileNamingStrategy("ALL_PERMS"));
-        authoritiesWriter.setAppendable(true);
-        try {
-            authoritiesWriter.write("," + StringUtils.upperCase(permission));
-        } catch (IOException e) {
-            logger.error("unable to write data to Hadoop: " + e.getMessage());
-            logger.error(e.toString());
-            throw new AppInternalError("unable to write data to Hadoop: " + e.getMessage());
-        } finally {
-            try {
-                authoritiesWriter.flush();
-                authoritiesWriter.close();
-            } catch (IOException e) {
-                logger.error("unable to write data to Hadoop: " + e.getMessage());
-                logger.error(e.toString());
-            }
-        }
+        writeText(properties.getAuthoritiesPath(), "ALL_PERMS",
+                "," + StringUtils.upperCase(permission), true, true);
     }
 
     @Override
     public void addRole(Role role) {
-        authoritiesWriter.setFileNamingStrategy(new StaticFileNamingStrategy("ROLE_" + role.getName()));
-        ObjectMapper mapper = new ObjectMapper();
-        try {
-            String dataAsString = mapper.writeValueAsString(role);
-            authoritiesWriter.write(dataAsString);
-        } catch (IOException e) {
-            logger.error("unable to write data to Hadoop: " + e.getMessage());
-            logger.error(e.toString());
-            throw new AppInternalError("unable to write data to Hadoop: " + e.getMessage());
-        } finally {
-            try {
-                authoritiesWriter.flush();
-                authoritiesWriter.close();
-            } catch (IOException e) {
-                logger.error("unable to write data to Hadoop: " + e.getMessage());
-                logger.error(e.toString());
-            }
-        }
-
+        writeJson(properties.getAuthoritiesPath(), "ROLE_" + role.getName(), role, false, false);
     }
 
     @Override
     public void editRole(Role role) {
-        authoritiesWriter.setOverwrite(true);
-        addRole(role);
-        authoritiesWriter.setOverwrite(false);
+        writeJson(properties.getAuthoritiesPath(), "ROLE_" + role.getName(), role, true, false);
     }
 
     public Role getRole(String name) {
-        for (FileStatus s : shell.ls(Paths.get(properties.getAuthoritiesPath(), name).toString())) {
-            if (s.isFile()) {
-                Collection<String> fileCollection = shell.text(Paths.get(properties.getAuthoritiesPath(), s.getPath().getName()).toString());
-                if (!fileCollection.isEmpty()) {
-                    ObjectMapper mapper = new ObjectMapper();
-                    try {
-                        return (mapper.readValue(fileCollection.iterator().next(), Role.class));
-                    } catch (IOException e) {
-                        logger.error("Unable to read data - " + e.getMessage());
-                        logger.error(e.toString());
-                        throw new AppInternalError("Unable to read data - " + e.getMessage());
-                    }
-                }
-            }
+        Path rolePath = new Path(properties.getAuthoritiesPath(), name);
+        if (exists(rolePath)) {
+            return readJson(rolePath, Role.class);
         }
         return null;
     }
@@ -272,42 +173,95 @@ public class HadoopUsers extends DataUserStoreService {
     @Override
     public Set<String> listUsers() {
         Set<String> users = new HashSet<>();
-        for (FileStatus s : shell.ls(Paths.get(properties.getAuthPath()).toString())) {
-            if (s.isFile()) {
-                String username = s.getPath().getName().split("_roles_")[0];
-                users.add(username);
+        for (FileStatus status : list(properties.getAuthPath())) {
+            if (status.isFile()) {
+                users.add(status.getPath().getName().split("_roles_")[0]);
             }
         }
         return users;
     }
 
-    @Configuration
-    @EnableConfigurationProperties(HadoopProperties.class)
-    static class Config {
-
-        @Autowired
-        UsersProperties properties;
-        @Autowired
-        private org.apache.hadoop.conf.Configuration hadoopConfiguration;
-
-        @Bean
-        TextFileWriter authWriter() {
-            TextFileWriter writer = new TextFileWriter(hadoopConfiguration, new Path(Paths.get(properties.getAuthPath()).toString()), null);
-            return writer;
+    private <T> T readJson(Path path, Class<T> type) {
+        try {
+            return mapper.readValue(readText(path), type);
+        } catch (IOException e) {
+            logger.error("Unable to read data - " + e.getMessage(), e);
+            throw new AppInternalError("Unable to read data - " + e.getMessage());
         }
+    }
 
-        @Bean
-        TextFileWriter removedAuthWriter() {
-            TextFileWriter writer = new TextFileWriter(hadoopConfiguration, new Path(Paths.get(properties.getOldAuthPath()).toString()),
-                    null);
-            return writer;
+    private void writeJson(String directory, String filename, Object value, boolean overwrite, boolean append) {
+        try {
+            writeText(directory, filename, mapper.writeValueAsString(value), overwrite, append);
+        } catch (IOException e) {
+            logger.error("unable to serialize data for Hadoop: " + e.getMessage(), e);
+            throw new AppInternalError("unable to serialize data for Hadoop: " + e.getMessage());
         }
+    }
 
-        @Bean
-        TextFileWriter authoritiesWriter() {
-            TextFileWriter writer = new TextFileWriter(hadoopConfiguration, new Path(Paths.get(properties.getAuthoritiesPath()).toString()),
-                    null);
-            return writer;
+    private String readText(Path path) {
+        try (FSDataInputStream inputStream = fileSystem.open(path)) {
+            return new String(inputStream.readAllBytes(), StandardCharsets.UTF_8);
+        } catch (IOException e) {
+            logger.error("Unable to read data - " + e.getMessage(), e);
+            throw new AppInternalError("Unable to read data - " + e.getMessage());
+        }
+    }
+
+    private void writeText(String directory, String filename, String data, boolean overwrite, boolean append) {
+        Path directoryPath = new Path(directory);
+        Path filePath = new Path(directoryPath, filename);
+        try {
+            fileSystem.mkdirs(directoryPath);
+            if (!overwrite && !append && fileSystem.exists(filePath)) {
+                throw new KeyExistsException();
+            }
+            if (append && fileSystem.exists(filePath)) {
+                try (FSDataOutputStream outputStream = fileSystem.append(filePath)) {
+                    outputStream.write(data.getBytes(StandardCharsets.UTF_8));
+                }
+            } else {
+                try (FSDataOutputStream outputStream = fileSystem.create(filePath, overwrite)) {
+                    outputStream.write(data.getBytes(StandardCharsets.UTF_8));
+                }
+            }
+        } catch (IOException e) {
+            logger.error("unable to write data to Hadoop: " + e.getMessage(), e);
+            throw new AppInternalError("unable to write data to Hadoop: " + e.getMessage());
+        }
+    }
+
+    private List<FileStatus> list(String path) {
+        try {
+            Path hadoopPath = new Path(path);
+            if (!fileSystem.exists(hadoopPath)) {
+                return new ArrayList<>();
+            }
+            return Arrays.asList(fileSystem.listStatus(hadoopPath));
+        } catch (IOException e) {
+            logger.error("unable to list Hadoop path: " + path, e);
+            throw new AppInternalError("unable to list Hadoop path: " + path);
+        }
+    }
+
+    private boolean exists(Path path) {
+        try {
+            return fileSystem.exists(path);
+        } catch (IOException e) {
+            logger.error("unable to check Hadoop path: " + path, e);
+            throw new AppInternalError("unable to check Hadoop path: " + path);
+        }
+    }
+
+    private void rename(Path source, Path destination) {
+        try {
+            fileSystem.mkdirs(destination.getParent());
+            if (!fileSystem.rename(source, destination)) {
+                throw new AppInternalError("unable to move Hadoop file");
+            }
+        } catch (IOException e) {
+            logger.error("unable to move Hadoop file: " + e.getMessage(), e);
+            throw new AppInternalError("unable to move Hadoop file: " + e.getMessage());
         }
     }
 }

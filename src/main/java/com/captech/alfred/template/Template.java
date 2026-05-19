@@ -19,9 +19,9 @@ package com.captech.alfred.template;
 import com.captech.alfred.Constants;
 import com.fasterxml.jackson.annotation.JsonAnyGetter;
 import com.fasterxml.jackson.annotation.JsonAnySetter;
+import jakarta.validation.Valid;
 import org.springframework.util.StringUtils;
 
-import javax.validation.Valid;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
@@ -123,7 +123,7 @@ public class Template {
     }
 
     public static Template checkTableName(Template metadata) {
-        if (StringUtils.isEmpty(metadata.getFile().getTechnical().getTableName())) {
+        if (!StringUtils.hasLength(metadata.getFile().getTechnical().getTableName())) {
             metadata.getFile().getTechnical().setTableName(metadata.getFile().getKey());
         }
         metadata.getFile().getTechnical()

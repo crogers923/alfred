@@ -18,27 +18,35 @@ package com.captech.alfred;
 
 import com.captech.alfred.dataConnections.DataStoreService;
 import com.captech.alfred.dataConnections.DataUserStoreService;
+import com.captech.alfred.dataConnections.UsersProperties;
 import com.captech.alfred.dataConnections.hadoop.HadoopDatastoreService;
 import com.captech.alfred.dataConnections.hadoop.HadoopProperties;
 import com.captech.alfred.dataConnections.hadoop.HadoopUsers;
+import com.captech.alfred.dataConnections.textFiles.TextFileProperties;
 import com.captech.alfred.template.TabularFile;
 import com.captech.alfred.template.TechnicalFile;
+import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.Path;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
 import org.springframework.context.annotation.*;
-import org.springframework.data.hadoop.store.output.TextFileWriter;
+
+import java.io.IOException;
+import java.net.URI;
 
 
-@Configuration@Profile("!local")
+@Configuration
+@Profile("!local")
 @ComponentScan(value = { "com.captech.alfred" })
-@EnableConfigurationProperties(HadoopProperties.class)
+@EnableConfigurationProperties({HadoopProperties.class, TextFileProperties.class, UsersProperties.class})
 public class AppConfig {
 
     @Autowired
     HadoopProperties properties;
-    @Autowired
-    private org.apache.hadoop.conf.Configuration hadoopConfiguration;
+
+    @Value("${spring.hadoop.config.fs.defaultFS:}")
+    private String defaultFileSystem;
 
     @Bean
     @Primary
@@ -59,8 +67,25 @@ public class AppConfig {
     }
 
     @Bean
-    TextFileWriter sampleWriter() {
-        return new TextFileWriter(hadoopConfiguration, new Path(properties.getFullSampleDir()), null);
+    org.apache.hadoop.conf.Configuration hadoopConfiguration() {
+        org.apache.hadoop.conf.Configuration configuration = new org.apache.hadoop.conf.Configuration();
+        if (defaultFileSystem != null && !defaultFileSystem.isEmpty()) {
+            configuration.set("fs.defaultFS", defaultFileSystem);
+        }
+        return configuration;
+    }
+
+    @Bean
+    FileSystem hadoopFileSystem(org.apache.hadoop.conf.Configuration hadoopConfiguration) throws IOException {
+        if (defaultFileSystem != null && !defaultFileSystem.isEmpty()) {
+            return FileSystem.get(URI.create(defaultFileSystem), hadoopConfiguration);
+        }
+        return FileSystem.get(hadoopConfiguration);
+    }
+
+    @Bean
+    Path sampleDirectory() {
+        return new Path(properties.getFullSampleDir());
     }
 
 }

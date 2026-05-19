@@ -26,58 +26,47 @@ import com.captech.alfred.instance.InstanceLog;
 import com.captech.alfred.template.Template;
 import com.captech.alfred.template.refined.Refined;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import org.apache.commons.lang.StringUtils;
+import org.apache.commons.lang3.StringUtils;
 import org.apache.hadoop.fs.ContentSummary;
+import org.apache.hadoop.fs.FSDataInputStream;
+import org.apache.hadoop.fs.FSDataOutputStream;
 import org.apache.hadoop.fs.FileStatus;
+import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.Path;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.autoconfigure.EnableAutoConfiguration;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
-import org.springframework.context.annotation.Bean;
-import org.springframework.context.annotation.Configuration;
-import org.springframework.data.hadoop.fs.FsShell;
-import org.springframework.data.hadoop.store.output.TextFileWriter;
-import org.springframework.data.hadoop.store.strategy.naming.StaticFileNamingStrategy;
+import org.springframework.context.annotation.Profile;
 import org.springframework.stereotype.Service;
 
 import java.io.IOException;
-import java.nio.file.Paths;
+import java.nio.charset.StandardCharsets;
 import java.text.ParseException;
 import java.text.SimpleDateFormat;
-import java.util.*;
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.Collections;
+import java.util.Date;
+import java.util.HashMap;
+import java.util.List;
+import java.util.UUID;
 
 @Service
+@Profile("!local")
 @EnableAutoConfiguration
 @EnableConfigurationProperties(HadoopProperties.class)
 public class HadoopDatastoreService extends DataStoreService {
 
     private static final Logger logger = LoggerFactory.getLogger(HadoopDatastoreService.class);
+    private final ObjectMapper mapper = new ObjectMapper();
 
     @Autowired
     HadoopProperties properties;
 
     @Autowired
-    private FsShell shell;
-
-    @Autowired
-    private TextFileWriter templateWriter;
-
-    @Autowired
-    private TextFileWriter instanceWriter;
-
-    @Autowired
-    private TextFileWriter refinedWriter;
-
-    @Autowired
-    private TextFileWriter refinedDraftWriter;
-
-    @Autowired
-    private TextFileWriter draftWriter;
-
-    @Autowired
-    private TextFileWriter sandboxWriter;
+    private FileSystem fileSystem;
 
     @Override
     public Template getCurrentMetadata(String key) {
@@ -96,60 +85,31 @@ public class HadoopDatastoreService extends DataStoreService {
 
     public Template getMetadata(String path, String key) {
         logger.debug("get metadata: " + key);
-        Collection<String> fileCollection = null;
         String filename = findData(path, key);
         if (filename != null) {
-            fileCollection = shell.text(Paths.get(path, filename).toString());
-            if (!fileCollection.isEmpty()) {
-                return convertToTemplate(fileCollection.iterator().next());
-            }
+            return readJson(new Path(path, filename), Template.class);
         }
         return null;
-    }
-
-    private Template convertToTemplate(String data) {
-        ObjectMapper mapper = new ObjectMapper();
-        try {
-            return mapper.readValue(data, Template.class);
-        } catch (IOException e) {
-            logger.error("Unable to read data - " + e.getMessage());
-            logger.error(e.toString());
-            throw new AppInternalError("Unable to read data - " + e.getMessage());
-        }
-    }
-
-    private Refined convertToRefined(String data) {
-        ObjectMapper mapper = new ObjectMapper();
-        try {
-            return mapper.readValue(data, Refined.class);
-        } catch (IOException e) {
-            logger.error("Unable to read data - " + e.getMessage());
-            logger.error(e.toString());
-            throw new AppInternalError("Unable to read data - " + e.getMessage());
-        }
     }
 
     @Override
     public String findMetaDataByFileName(String filename, String stage) {
         String key = null;
-        if (StringUtils.isEmpty(stage) || (stage != null && Constants.FINAL_STAGE.equals(stage))) {
-            key = findDataFromLS(shell.ls(Paths.get(properties.getCurrentMd()).toString()), filename, null);
+        if (StringUtils.isEmpty(stage) || Constants.FINAL_STAGE.equals(stage)) {
+            key = findDataFromLS(list(properties.getCurrentMd()), filename, null);
         }
-
-        if (StringUtils.isEmpty(stage) || (stage != null && Constants.SANDBOX.equals(stage))) {
-            key = findDataFromLS(shell.ls(Paths.get(properties.getCurrentSandbox()).toString()), filename, key);
+        if (StringUtils.isEmpty(stage) || Constants.SANDBOX.equals(stage)) {
+            key = findDataFromLS(list(properties.getCurrentSandbox()), filename, key);
         }
-
         return key;
     }
 
-    private String findDataFromLS(Collection<FileStatus> fileStatuses, String filename, String lastfound) {
+    private String findDataFromLS(List<FileStatus> fileStatuses, String filename, String lastfound) {
         String key = lastfound;
-        for (FileStatus s : fileStatuses) {
-            if (s.isFile()) {
-                String name = s.getPath().getName().split(Constants.OWNER_PREFIX)[0];
+        for (FileStatus status : fileStatuses) {
+            if (status.isFile()) {
+                String name = status.getPath().getName().split(Constants.OWNER_PREFIX)[0];
                 if (matchesPattern(filename, name)) {
-                    // make sure it's the most specific match
                     String tempKey = parseKey(name).get(Constants.TEMPLATE_KEY);
                     if (key == null || tempKey.length() > key.length()) {
                         key = tempKey;
@@ -175,7 +135,8 @@ public class HadoopDatastoreService extends DataStoreService {
         if (!hasRequiredFields(metadata)) {
             return null;
         }
-        if (!Constants.DRAFT.equalsIgnoreCase(metadata.getStage()) && getCurrentMetadata(metadata.getFile().getKey()) != null) {
+        if (!Constants.DRAFT.equalsIgnoreCase(metadata.getStage())
+                && getCurrentMetadata(metadata.getFile().getKey()) != null) {
             throw new KeyExistsException();
         }
         if (Constants.SANDBOX.equalsIgnoreCase(metadata.getStage())
@@ -186,62 +147,32 @@ public class HadoopDatastoreService extends DataStoreService {
             throw new KeyExistsException();
         }
 
-        TextFileWriter writer = templateWriter;
+        String path = properties.getCurrentMd();
         if (Constants.DRAFT.equalsIgnoreCase(metadata.getStage())) {
-            writer = draftWriter;
+            path = properties.getDraftMd();
             deleteDraft(metadata.getFile().getKey());
         }
         if (Constants.SANDBOX.equalsIgnoreCase(metadata.getStage())) {
-            writer = sandboxWriter;
+            path = properties.getCurrentSandbox();
         }
-        writer.setFileNamingStrategy(new StaticFileNamingStrategy(createKey(metadata)));
-        ObjectMapper mapper = new ObjectMapper();
-        try {
-            String dataAsString = mapper.writeValueAsString(metadata);
-            writer.write(dataAsString);
-        } catch (IOException e) {
-            logger.error("unable to write data to Hadoop: " + e.getMessage());
-            logger.error(e.toString());
-            throw new AppInternalError("unable to write data to Hadoop: " + e.getMessage());
-        } finally {
-            try {
-                writer.flush();
-                writer.close();
-            } catch (IOException e) {
-                logger.error("unable to write data to Hadoop: " + e.getMessage());
-                logger.error(e.toString());
-            }
-        }
+        writeJson(path, createKey(metadata), metadata, true, false);
         return metadata.getFile().getKey();
     }
 
     @Override
     public String deleteMetadata(String key) {
-
         Template data = getCurrentMetadata(key);
         if (data == null) {
             String returnVal = deleteSandboxMetadata(key);
-            if (StringUtils.isEmpty(returnVal) && data == null) {
-                if (!deleteDraft(key)) {
-                    throw new NoDataFound();
-                }
-                return "draft deleted";
+            if (StringUtils.isEmpty(returnVal) && !deleteDraft(key)) {
+                throw new NoDataFound();
             }
-            return returnVal;
+            return StringUtils.defaultIfEmpty(returnVal, "draft deleted");
         }
-        String version = data.getVersion();
-        Date dateVersion = new Date();
-        if (version != null) {
-            try {
-                dateVersion = new SimpleDateFormat(Constants.VERSION_FORMAT).parse(version);
-            } catch (ParseException e) {
-                logger.error("HadoopDatastoreService - unable to parse version from file. Using current date instead");
-            }
-        }
-
-        String formattedVersion = new SimpleDateFormat(Constants.HADOOP_VERS_FORMAT).format(dateVersion);
-        String currentFile = Paths.get(properties.getCurrentMd(), findData(properties.getCurrentMd(), key)).toString();
-        shell.mv(currentFile, Paths.get(properties.getVersionedMd(), key + "_" + formattedVersion).toString());
+        String formattedVersion = formatVersion(data.getVersion());
+        String currentFile = findData(properties.getCurrentMd(), key);
+        rename(new Path(properties.getCurrentMd(), currentFile),
+                new Path(properties.getVersionedMd(), key + "_" + formattedVersion));
         return properties.getVersionedMd() + key;
     }
 
@@ -250,40 +181,23 @@ public class HadoopDatastoreService extends DataStoreService {
         if (data == null) {
             return null;
         }
-        String version = data.getVersion();
-        Date dateVersion = new Date();
-        if (version != null) {
-            try {
-                dateVersion = new SimpleDateFormat(Constants.VERSION_FORMAT).parse(version);
-            } catch (ParseException e) {
-                logger.error("HadoopDatastoreService - unable to parse version from file. Using current date instead");
-            }
-        }
-
-        String formattedVersion = new SimpleDateFormat(Constants.HADOOP_VERS_FORMAT).format(dateVersion);
-        String currentFile = Paths.get(properties.getCurrentSandbox(), findData(properties.getCurrentSandbox(), key))
-                .toString();
-        shell.mv(currentFile, Paths.get(properties.getVersionedSandbox(), (key + "_" + formattedVersion)).toString());
+        String formattedVersion = formatVersion(data.getVersion());
+        String currentFile = findData(properties.getCurrentSandbox(), key);
+        rename(new Path(properties.getCurrentSandbox(), currentFile),
+                new Path(properties.getVersionedSandbox(), key + "_" + formattedVersion));
         return properties.getVersionedSandbox() + key;
     }
 
     @Override
     public List<InstanceLog> getInstanceLog(String guid) {
         List<InstanceLog> logs = new ArrayList<>();
-        Collection<String> fileTexts = shell.text(Paths.get(properties.getLogLocation() + guid + "*").toString());
-        if (fileTexts == null || fileTexts.isEmpty()) {
+        FileStatus[] fileStatuses = glob(new Path(properties.getLogLocation(), guid + "*"));
+        if (fileStatuses.length == 0) {
             throw new NoDataFound();
         }
-        for (String s : fileTexts) {
-            InstanceLog log = new InstanceLog();
-            ObjectMapper mapper = new ObjectMapper();
-            try {
-                log = mapper.readValue(s, InstanceLog.class);
-                logs.add(log);
-            } catch (IOException e) {
-                logger.error("Unable to read data - " + e.getMessage());
-                logger.error(e.toString());
-                throw new AppInternalError("Unable to read data - " + e.getMessage());
+        for (FileStatus status : fileStatuses) {
+            if (status.isFile()) {
+                logs.add(readJson(status.getPath(), InstanceLog.class));
             }
         }
         return logs;
@@ -291,44 +205,25 @@ public class HadoopDatastoreService extends DataStoreService {
 
     @Override
     public Guid writeInstanceLog(InstanceLog log, String guid) {
-        UUID guidUUID = UUID.randomUUID();
+        UUID guidUUID;
         if (guid == null) {
+            guidUUID = UUID.randomUUID();
             guid = guidUUID.toString();
-            log.setGuid(guidUUID);
         } else {
             guidUUID = UUID.fromString(guid);
-            log.setGuid(guidUUID);
         }
+        log.setGuid(guidUUID);
         if (log.getStage() == null) {
             log.setStage("unknown");
         }
         String name = guid + "_" + log.getStage();
-        for (FileStatus s : shell.ls(Paths.get(properties.getLogLocation()).toString())) {
-            if (s.isFile() && stripExtension(s.getPath().getName()).equals(name)) {
-                logger.error("Instance Log name: " + name + "already exists. Writing new name");
-                name = UUID.randomUUID().toString() + "_" + log.getStage();
-                logger.error("Instance log new name: " + name);
+        for (FileStatus status : list(properties.getLogLocation())) {
+            if (status.isFile() && stripExtension(status.getPath().getName()).equals(name)) {
+                logger.error("Instance Log name: " + name + " already exists. Writing new name");
+                name = UUID.randomUUID() + "_" + log.getStage();
             }
         }
-
-        instanceWriter.setFileNamingStrategy(new StaticFileNamingStrategy(name));
-        ObjectMapper mapper = new ObjectMapper();
-        try {
-            String dataAsString = mapper.writeValueAsString(log);
-            instanceWriter.write(dataAsString);
-        } catch (IOException e) {
-            logger.error("unable to write data to Hadoop: " + e.getMessage());
-            logger.error(e.toString());
-            throw new AppInternalError("unable to write data to Hadoop: " + e.getMessage());
-        } finally {
-            try {
-                instanceWriter.flush();
-                instanceWriter.close();
-            } catch (IOException e) {
-                logger.error("unable to write data to Hadoop: " + e.getMessage());
-                logger.error(e.toString());
-            }
-        }
+        writeJson(properties.getLogLocation(), name, log, false, false);
         return new Guid(guidUUID);
     }
 
@@ -339,42 +234,20 @@ public class HadoopDatastoreService extends DataStoreService {
             throw new KeyExistsException();
         }
 
-        TextFileWriter writer = refinedWriter;
+        String path = properties.getCurrentRefined();
         if (Constants.DRAFT.equalsIgnoreCase(refined.getRefinedDataset().getStage())) {
-            writer = refinedDraftWriter;
+            path = properties.getDraftRefined();
             deleteRefinedDraft(refined.getRefinedDataset().getFile().getKey());
         }
-
-        writer.setFileNamingStrategy(new StaticFileNamingStrategy(createKey(refined.getRefinedDataset())));
-        ObjectMapper mapper = new ObjectMapper();
-        try {
-            String dataAsString = mapper.writeValueAsString(refined);
-            writer.write(dataAsString);
-        } catch (IOException e) {
-            logger.error("unable to write data to Hadoop: " + e.getMessage());
-            logger.error(e.toString());
-            throw new AppInternalError("unable to write data to Hadoop: " + e.getMessage());
-        } finally {
-            try {
-                writer.flush();
-                writer.close();
-            } catch (IOException e) {
-                logger.error("unable to write data to Hadoop: " + e.getMessage());
-                logger.error(e.toString());
-            }
-        }
+        writeJson(path, createKey(refined.getRefinedDataset()), refined, true, false);
         return refined.getRefinedDataset().getFile().getKey();
     }
 
     public Refined getRefined(String path, String key) {
-        logger.debug("get metadata: " + key);
-        Collection<String> fileCollection = null;
+        logger.debug("get refined metadata: " + key);
         String filename = findData(path, key);
         if (filename != null) {
-            fileCollection = shell.text(Paths.get(path, filename).toString());
-            if (!fileCollection.isEmpty()) {
-                return convertToRefined(fileCollection.iterator().next());
-            }
+            return readJson(new Path(path, filename), Refined.class);
         }
         return null;
     }
@@ -404,7 +277,6 @@ public class HadoopDatastoreService extends DataStoreService {
 
     @Override
     public String deleteRefined(String key) {
-
         Refined data = getRefined(properties.getCurrentRefined(), key);
         if (data == null) {
             if (!deleteRefinedDraft(key)) {
@@ -412,26 +284,51 @@ public class HadoopDatastoreService extends DataStoreService {
             }
             return "draft deleted";
         }
-        String version = data.getRefinedDataset().getVersion();
-        Date dateVersion = new Date();
-        if (version != null) {
-            try {
-                dateVersion = new SimpleDateFormat(Constants.VERSION_FORMAT).parse(version);
-            } catch (ParseException e) {
-                logger.error("HadoopDatastoreService - unable to parse version from file. Using current date instead");
-            }
-        }
-        String formattedVersion = new SimpleDateFormat(Constants.HADOOP_VERS_FORMAT).format(dateVersion);
-        String currentFile = Paths.get(properties.getCurrentRefined(), findData(properties.getCurrentRefined(), key))
-                .toString();
-        shell.mv(currentFile, properties.getVersionedRefined() + key + "_" + formattedVersion);
+        String formattedVersion = formatVersion(data.getRefinedDataset().getVersion());
+        String currentFile = findData(properties.getCurrentRefined(), key);
+        rename(new Path(properties.getCurrentRefined(), currentFile),
+                new Path(properties.getVersionedRefined(), key + "_" + formattedVersion));
         return properties.getVersionedRefined() + key;
     }
 
+    @Override
+    public List<String> getAllKeys() {
+        ArrayList<String> keys = new ArrayList<>();
+        addKeys(keys, properties.getCurrentMd());
+        addKeys(keys, properties.getCurrentSandbox());
+        return keys;
+    }
+
+    @Override
+    public long getCount() {
+        return count(properties.getCurrentMd())
+                + count(properties.getCurrentRefined())
+                + count(properties.getCurrentSandbox());
+    }
+
+    @Override
+    public List<String> getRefinedKeys() {
+        ArrayList<String> keys = new ArrayList<>();
+        addKeys(keys, properties.getCurrentRefined());
+        return keys;
+    }
+
+    public void writeSample(String filename, String sampleData) {
+        writeText(properties.getFullSampleDir(), filename, sampleData, true, false);
+    }
+
+    private void addKeys(List<String> keys, String path) {
+        for (FileStatus status : list(path)) {
+            if (status.isFile()) {
+                keys.add(parseKey(status.getPath().getName()).get(Constants.TEMPLATE_KEY));
+            }
+        }
+    }
+
     private String findData(String path, String key) {
-        for (FileStatus s : shell.ls(Paths.get(path).toString())) {
-            if (s.isFile() && StringUtils.equals(s.getPath().getName().split(Constants.OWNER_PREFIX)[0], key)) {
-                return s.getPath().getName();
+        for (FileStatus status : list(path)) {
+            if (status.isFile() && StringUtils.equals(status.getPath().getName().split(Constants.OWNER_PREFIX)[0], key)) {
+                return status.getPath().getName();
             }
         }
         return null;
@@ -450,7 +347,7 @@ public class HadoopDatastoreService extends DataStoreService {
         if (filename == null) {
             return false;
         }
-        shell.rm(Paths.get(properties.getDraftMd(), filename).toString());
+        delete(new Path(properties.getDraftMd(), filename));
         return true;
     }
 
@@ -459,116 +356,124 @@ public class HadoopDatastoreService extends DataStoreService {
         if (filename == null) {
             return false;
         }
-        shell.rm(Paths.get(properties.getDraftRefined(), filename).toString());
+        delete(new Path(properties.getDraftRefined(), filename));
         return true;
     }
 
-    @Override
-    public List<String> getAllKeys() {
-        ArrayList<String> keys = new ArrayList<>();
-        for (FileStatus s : shell.ls(Paths.get(properties.getCurrentMd()).toString())) {
-            if (s.isFile()) {
-                HashMap<String, String> map = parseKey(s.getPath().getName());
-                String key = map.get(Constants.TEMPLATE_KEY);
-                keys.add(key);
+    private String formatVersion(String version) {
+        Date dateVersion = new Date();
+        if (version != null) {
+            try {
+                dateVersion = new SimpleDateFormat(Constants.VERSION_FORMAT).parse(version);
+            } catch (ParseException e) {
+                logger.error("HadoopDatastoreService - unable to parse version from file. Using current date instead");
             }
         }
-        for (FileStatus s : shell.ls(Paths.get(properties.getCurrentSandbox()).toString())) {
-            if (s.isFile()) {
-                HashMap<String, String> map = parseKey(s.getPath().getName());
-                String key = map.get(Constants.TEMPLATE_KEY);
-                keys.add(key);
+        return new SimpleDateFormat(Constants.HADOOP_VERS_FORMAT).format(dateVersion);
+    }
+
+    private <T> T readJson(Path path, Class<T> type) {
+        try {
+            return mapper.readValue(readText(path), type);
+        } catch (IOException e) {
+            logger.error("Unable to read data - " + e.getMessage(), e);
+            throw new AppInternalError("Unable to read data - " + e.getMessage());
+        }
+    }
+
+    private void writeJson(String directory, String filename, Object value, boolean overwrite, boolean append) {
+        try {
+            writeText(directory, filename, mapper.writeValueAsString(value), overwrite, append);
+        } catch (IOException e) {
+            logger.error("unable to serialize data for Hadoop: " + e.getMessage(), e);
+            throw new AppInternalError("unable to serialize data for Hadoop: " + e.getMessage());
+        }
+    }
+
+    private String readText(Path path) throws IOException {
+        try (FSDataInputStream inputStream = fileSystem.open(path)) {
+            return new String(inputStream.readAllBytes(), StandardCharsets.UTF_8);
+        }
+    }
+
+    private void writeText(String directory, String filename, String data, boolean overwrite, boolean append) {
+        Path directoryPath = new Path(directory);
+        Path filePath = new Path(directoryPath, filename);
+        try {
+            fileSystem.mkdirs(directoryPath);
+            if (!overwrite && !append && fileSystem.exists(filePath)) {
+                throw new KeyExistsException();
             }
-        }
-
-        return keys;
-    }
-
-    @Override
-    public long getCount() {
-        // TODO: vary based on request of what to see and add drafts
-        Map<Path, ContentSummary> currentCountSummary = shell.count(Paths.get(properties.getCurrentMd()).toString());
-        long currentCount = 0;
-        for (ContentSummary cs : currentCountSummary.values()) {
-            currentCount += cs.getFileCount();
-        }
-        long refinedCount = 0;
-        Map<Path, ContentSummary> refinedCountSummary = shell
-                .count(Paths.get(properties.getCurrentRefined()).toString());
-        for (ContentSummary cs : refinedCountSummary.values()) {
-            refinedCount += cs.getFileCount();
-        }
-        long sandboxCount = 0;
-        Map<Path, ContentSummary> sanboxCountSummary = shell
-                .count(Paths.get(properties.getCurrentSandbox()).toString());
-        for (ContentSummary cs : sanboxCountSummary.values()) {
-            sandboxCount += cs.getFileCount();
-        }
-        return currentCount + refinedCount + sandboxCount;
-    }
-
-    @Override
-    public List<String> getRefinedKeys() {
-        ArrayList<String> keys = new ArrayList<>();
-        for (FileStatus s : shell.ls(Paths.get(properties.getCurrentRefined()).toString())) {
-            if (s.isFile()) {
-                HashMap<String, String> map = parseKey(s.getPath().getName());
-                String key = map.get(Constants.TEMPLATE_KEY);
-                keys.add(key);
+            if (append && fileSystem.exists(filePath)) {
+                try (FSDataOutputStream outputStream = fileSystem.append(filePath)) {
+                    outputStream.write(data.getBytes(StandardCharsets.UTF_8));
+                }
+            } else {
+                try (FSDataOutputStream outputStream = fileSystem.create(filePath, overwrite)) {
+                    outputStream.write(data.getBytes(StandardCharsets.UTF_8));
+                }
             }
+        } catch (IOException e) {
+            logger.error("unable to write data to Hadoop: " + e.getMessage(), e);
+            throw new AppInternalError("unable to write data to Hadoop: " + e.getMessage());
         }
-        return keys;
     }
 
-    @Configuration
-    @EnableConfigurationProperties(HadoopProperties.class)
-    static class Config {
-
-        @Autowired
-        HadoopProperties properties;
-        @Autowired
-        private org.apache.hadoop.conf.Configuration hadoopConfiguration;
-
-        @Bean
-        TextFileWriter templateWriter() {
-            TextFileWriter writer = new TextFileWriter(hadoopConfiguration, new Path(properties.getCurrentMd()), null);
-            return writer;
+    private List<FileStatus> list(String path) {
+        try {
+            Path hadoopPath = new Path(path);
+            if (!fileSystem.exists(hadoopPath)) {
+                return Collections.emptyList();
+            }
+            return Arrays.asList(fileSystem.listStatus(hadoopPath));
+        } catch (IOException e) {
+            logger.error("unable to list Hadoop path: " + path, e);
+            throw new AppInternalError("unable to list Hadoop path: " + path);
         }
-
-        @Bean
-        TextFileWriter draftWriter() {
-            TextFileWriter writer = new TextFileWriter(hadoopConfiguration, new Path(properties.getDraftMd()), null);
-            return writer;
-        }
-
-        @Bean
-        TextFileWriter instanceWriter() {
-            TextFileWriter writer = new TextFileWriter(hadoopConfiguration, new Path(properties.getLogLocation()),
-                    null);
-            return writer;
-        }
-
-        @Bean
-        TextFileWriter refinedWriter() {
-            TextFileWriter writer = new TextFileWriter(hadoopConfiguration, new Path(properties.getCurrentRefined()),
-                    null);
-            return writer;
-        }
-
-        @Bean
-        TextFileWriter refinedDraftWriter() {
-            TextFileWriter writer = new TextFileWriter(hadoopConfiguration, new Path(properties.getDraftRefined()),
-                    null);
-            return writer;
-        }
-
-        @Bean
-        TextFileWriter sandboxWriter() {
-            TextFileWriter writer = new TextFileWriter(hadoopConfiguration, new Path(properties.getCurrentSandbox()),
-                    null);
-            return writer;
-        }
-
     }
 
+    private FileStatus[] glob(Path path) {
+        try {
+            FileStatus[] statuses = fileSystem.globStatus(path);
+            return statuses == null ? new FileStatus[0] : statuses;
+        } catch (IOException e) {
+            logger.error("unable to glob Hadoop path: " + path, e);
+            throw new AppInternalError("unable to glob Hadoop path: " + path);
+        }
+    }
+
+    private long count(String path) {
+        try {
+            Path hadoopPath = new Path(path);
+            if (!fileSystem.exists(hadoopPath)) {
+                return 0;
+            }
+            ContentSummary contentSummary = fileSystem.getContentSummary(hadoopPath);
+            return contentSummary.getFileCount();
+        } catch (IOException e) {
+            logger.error("unable to count Hadoop path: " + path, e);
+            throw new AppInternalError("unable to count Hadoop path: " + path);
+        }
+    }
+
+    private void rename(Path source, Path destination) {
+        try {
+            fileSystem.mkdirs(destination.getParent());
+            if (!fileSystem.rename(source, destination)) {
+                throw new AppInternalError("unable to move Hadoop file");
+            }
+        } catch (IOException e) {
+            logger.error("unable to move Hadoop file: " + e.getMessage(), e);
+            throw new AppInternalError("unable to move Hadoop file: " + e.getMessage());
+        }
+    }
+
+    private void delete(Path path) {
+        try {
+            fileSystem.delete(path, false);
+        } catch (IOException e) {
+            logger.error("unable to delete Hadoop file: " + e.getMessage(), e);
+            throw new AppInternalError("unable to delete Hadoop file: " + e.getMessage());
+        }
+    }
 }
